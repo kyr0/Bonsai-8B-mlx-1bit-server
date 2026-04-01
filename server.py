@@ -1,4 +1,4 @@
-"""OpenAI-compatible FastAPI server for bonsai powered by mlx_lm."""
+"""OpenAI-compatible FastAPI server for bonsai - powered by mlx_lm."""
 
 import json
 import time
@@ -8,7 +8,6 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from mlx_lm import load, generate
 

@@ -89,6 +89,12 @@ else
     FAIL=$((FAIL + 1))
 fi
 
+# -- Long generation (65536 tokens) -------
+run_test "Chat: Long generation (65536 tokens)" "/v1/chat/completions" '{
+    "messages": [{"role": "user", "content": "Write the longest, most detailed essay you can about the history of computing, from the abacus to modern AI."}],
+    "max_tokens": 65536
+}'
+
 # -- Summary ------------------------------
 printf "\n==============================\n"
 printf "  Results: %d passed, %d failed\n" "$PASS" "$FAIL"
