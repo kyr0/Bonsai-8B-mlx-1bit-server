@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# test.sh - run a few example queries against the bonsai server
+# test.sh - run a few example queries against the bonsai mlx_lm server
 set -euo pipefail
 
-BASE_URL="${bonsai_URL:-http://127.0.0.1:8430}"
+BASE_URL="${BONSAI_URL:-http://127.0.0.1:8430}"
 PASS=0
 FAIL=0
 
@@ -28,19 +28,7 @@ run_test() {
     fi
 }
 
-# -- Health --------------------------------
-printf "\n-- Health check --\n"
-HTTP_CODE=$(curl -s -o /tmp/bonsai_test_resp.json -w "%{http_code}" "$BASE_URL/health")
-if [[ "$HTTP_CODE" == "200" ]]; then
-    printf "  [OK] HTTP %s\n" "$HTTP_CODE"
-    python3 -m json.tool /tmp/bonsai_test_resp.json 2>/dev/null
-    PASS=$((PASS + 1))
-else
-    printf "  [X] HTTP %s\n" "$HTTP_CODE"
-    FAIL=$((FAIL + 1))
-fi
-
-# -- List models ---------------------------
+# -- List models (health check) -----------
 printf "\n-- List models --\n"
 HTTP_CODE=$(curl -s -o /tmp/bonsai_test_resp.json -w "%{http_code}" "$BASE_URL/v1/models")
 if [[ "$HTTP_CODE" == "200" ]]; then
@@ -71,16 +59,35 @@ run_test "Chat: System + user prompt" "/v1/chat/completions" '{
     "max_tokens": 64
 }'
 
-# -- Plain completions --------------------
-run_test "Completion: Continue text" "/v1/completions" '{
-    "prompt": "The quick brown fox",
+run_test "Chat: Code question" "/v1/chat/completions" '{
+    "messages": [{"role": "user", "content": "Write a Python function that returns the nth Fibonacci number."}],
+    "max_tokens": 128
+}'
+
+run_test "Chat: Creative" "/v1/chat/completions" '{
+    "messages": [{"role": "user", "content": "Write a limerick about a program that never compiles."}],
     "max_tokens": 64
 }'
 
-run_test "Completion: Code generation" "/v1/completions" '{
-    "prompt": "def fibonacci(n):\n    \"\"\"Return the nth Fibonacci number.\"\"\"\n",
-    "max_tokens": 128
-}'
+# -- Streaming chat completion ------------
+printf "\n-- Chat: Streaming --\n"
+STREAM_OUTPUT=$(curl -sN -X POST "$BASE_URL/v1/chat/completions" \
+    -H "Content-Type: application/json" \
+    -d '{"messages": [{"role": "user", "content": "Count from 1 to 5."}], "max_tokens": 64, "stream": true}' \
+    --max-time 30 2>/dev/null)
+
+# Check we got SSE data lines
+CHUNK_COUNT=$(echo "$STREAM_OUTPUT" | grep -c "^data: " || true)
+HAS_DONE=$(echo "$STREAM_OUTPUT" | grep -c "data: \[DONE\]" || true)
+
+if [[ "$CHUNK_COUNT" -gt 1 && "$HAS_DONE" -ge 1 ]]; then
+    printf "  [OK] Streaming: %d chunks received, [DONE] present\n" "$CHUNK_COUNT"
+    PASS=$((PASS + 1))
+else
+    printf "  [X] Streaming: got %d chunks, [DONE]=%d\n" "$CHUNK_COUNT" "$HAS_DONE"
+    echo "$STREAM_OUTPUT" | head -5
+    FAIL=$((FAIL + 1))
+fi
 
 # -- Summary ------------------------------
 printf "\n==============================\n"

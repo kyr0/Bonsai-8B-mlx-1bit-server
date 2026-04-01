@@ -11,9 +11,8 @@ HOST        := 127.0.0.1
 PORT        := 8430
 MODEL       := prism-ml/Bonsai-8B-mlx-1bit
 
-.PHONY: setup start stop status log test download clean
+.PHONY: setup start stop status log test bench generate download clean
 
-# -- setup ------------------------------------------------------------
 setup: _install_uv _ensure_metal_toolchain _venv _deps download
 	@echo "\n[OK]  Setup complete. Run 'make start' to launch the server."
 
@@ -43,7 +42,7 @@ _venv:
 
 _deps:
 	@echo "=> Installing Python dependencies ..."
-	$(UV) pip install --quiet mlx-lm fastapi 'uvicorn[standard]'
+	$(UV) pip install --quiet mlx-lm
 	@echo "=> Installing PrismML MLX fork (1-bit quant + Metal space-path fix) ..."
 	$(UV) pip install --quiet ./mlx
 
@@ -52,20 +51,21 @@ download:
 	$(VENV)/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('$(MODEL)')"
 	@echo "=> Model cached."
 
-# -- start ------------------------------------------------------------
 start:
 	@if [ -f "$(PID_FILE)" ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
 		echo "Server already running (PID $$(cat $(PID_FILE)))"; \
 	else \
-		echo "=> Starting bonsai server on $(HOST):$(PORT) ..."; \
-		$(VENV)/bin/uvicorn server:app \
+		echo "=> Starting bonsai mlx_lm.server on $(HOST):$(PORT) ..."; \
+		$(VENV)/bin/python -m mlx_lm.server \
+			--model $(MODEL) \
 			--host $(HOST) --port $(PORT) \
+			--temp 0.5 --top-p 0.85 \
 			>> $(LOG_FILE) 2>&1 & \
 		echo $$! > $(PID_FILE); \
 		echo "=> Server PID: $$(cat $(PID_FILE))  (log: $(LOG_FILE))"; \
 		echo "=> Waiting for server to be ready ..."; \
 		for i in {1..60}; do \
-			if curl -sf http://$(HOST):$(PORT)/health >/dev/null 2>&1; then \
+			if curl -sf http://$(HOST):$(PORT)/v1/models >/dev/null 2>&1; then \
 				echo "=> Server is ready."; \
 				break; \
 			fi; \
@@ -73,7 +73,6 @@ start:
 		done; \
 	fi
 
-# -- stop -------------------------------------------------------------
 stop:
 	@if [ -f "$(PID_FILE)" ]; then \
 		PID=$$(cat $(PID_FILE)); \
@@ -97,11 +96,10 @@ status:
 	else \
 		echo "Process: not running"; \
 	fi
-	@curl -sf http://$(HOST):$(PORT)/health 2>/dev/null \
+	@curl -sf http://$(HOST):$(PORT)/v1/models 2>/dev/null \
 		&& echo "" \
-		|| echo "Health endpoint: unreachable"
+		|| echo "Server: unreachable"
 
-# -- log --------------------------------------------------------------
 log:
 	@if [ -f "$(LOG_FILE)" ]; then \
 		tail -f $(LOG_FILE); \
@@ -109,9 +107,12 @@ log:
 		echo "No log file yet."; \
 	fi
 
-# -- test -------------------------------------------------------------
 test:
 	@bash test.sh
+
+# -- bench ------------------------------------------------------------
+bench:
+	@bash bench.sh
 
 # -- clean ------------------------------------------------------------
 clean:

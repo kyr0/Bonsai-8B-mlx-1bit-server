@@ -24,7 +24,9 @@ async def lifespan(app: FastAPI):
     global model, tokenizer
     logger.info("Loading model %s ...", MODEL_NAME)
     model, tokenizer = load(MODEL_NAME)
-    logger.info("Model loaded.")
+    logger.info("Model loaded. Running warmup ...")
+    _ = generate(model, tokenizer, prompt="Hello", max_tokens=2)
+    logger.info("Warmup complete.")
     yield
 
 
@@ -48,8 +50,15 @@ class CompletionRequest(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     stream: bool = False
 
-def _generate(prompt: str, max_tokens: int) -> str:
-    return generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens)
+def _generate(prompt: str, max_tokens: int) -> tuple[str, int, int, float]:
+    """Return (text, prompt_tokens, completion_tokens, gen_seconds)."""
+    prompt_toks = tokenizer.encode(prompt)
+    prompt_tokens = len(prompt_toks)
+    t0 = time.perf_counter()
+    text = generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens)
+    gen_seconds = time.perf_counter() - t0
+    completion_tokens = len(tokenizer.encode(text))
+    return text, prompt_tokens, completion_tokens, gen_seconds
 
 
 def _build_chat_prompt(messages: list[Message]) -> str:
@@ -103,8 +112,10 @@ async def chat_completions(req: ChatCompletionRequest):
     try:
         prompt = _build_chat_prompt(req.messages)
         logger.info("Chat prompt length: %d chars", len(prompt))
-        text = _generate(prompt, req.max_tokens)
-        logger.info("Chat response length: %d chars", len(text))
+        text, prompt_tokens, completion_tokens, gen_s = _generate(prompt, req.max_tokens)
+        tok_s = round(completion_tokens / gen_s, 1) if gen_s > 0 else 0
+        logger.info("Chat: %d prompt tok, %d compl tok, %.2fs, %.1f tok/s",
+                    prompt_tokens, completion_tokens, gen_s, tok_s)
     except Exception:
         logger.error("Chat completion failed:\n%s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=traceback.format_exc())
@@ -123,9 +134,13 @@ async def chat_completions(req: ChatCompletionRequest):
             }
         ],
         "usage": {
-            "prompt_tokens": -1,
-            "completion_tokens": -1,
-            "total_tokens": -1,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+        "timing": {
+            "generation_seconds": round(gen_s, 3),
+            "tokens_per_second": tok_s,
         },
     }
 
@@ -137,8 +152,10 @@ async def completions(req: CompletionRequest):
 
     try:
         logger.info("Completion prompt length: %d chars", len(req.prompt))
-        text = _generate(req.prompt, req.max_tokens)
-        logger.info("Completion response length: %d chars", len(text))
+        text, prompt_tokens, completion_tokens, gen_s = _generate(req.prompt, req.max_tokens)
+        tok_s = round(completion_tokens / gen_s, 1) if gen_s > 0 else 0
+        logger.info("Completion: %d prompt tok, %d compl tok, %.2fs, %.1f tok/s",
+                    prompt_tokens, completion_tokens, gen_s, tok_s)
     except Exception:
         logger.error("Completion failed:\n%s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=traceback.format_exc())
@@ -157,8 +174,12 @@ async def completions(req: CompletionRequest):
             }
         ],
         "usage": {
-            "prompt_tokens": -1,
-            "completion_tokens": -1,
-            "total_tokens": -1,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+        "timing": {
+            "generation_seconds": round(gen_s, 3),
+            "tokens_per_second": tok_s,
         },
     }
