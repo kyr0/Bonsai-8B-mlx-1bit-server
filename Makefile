@@ -45,7 +45,7 @@ _deps:
 	@echo "=> Installing Python dependencies ..."
 	$(UV) pip install --quiet mlx-lm fastapi 'uvicorn[standard]'
 	@echo "=> Installing PrismML MLX fork (1-bit quant + Metal space-path fix) ..."
-	$(UV) pip install --quiet mlx@git+https://github.com/aramdov/mlx.git@fix/metal-preamble-space-paths
+	$(UV) pip install --quiet ./mlx
 
 download:
 	@echo "=> Pre-downloading model $(MODEL) ..."
