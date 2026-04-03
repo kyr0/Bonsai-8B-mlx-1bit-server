@@ -12,6 +12,7 @@ Uses a [PrismML MLX fork](https://github.com/PrismML-Eng/mlx) for 1-bit quantiza
 
 - macOS on Apple Silicon (tested on Macbook Air M4 24GB, macOS 15.7.3 with Metal SDK 26)
 - Xcode Metal Toolchain (`setup` installs it automatically)
+- Python 3.12
 
 ## Quick start
 
@@ -47,7 +48,50 @@ Answer like this:
 > [x] prism-ml/Bonsai-8B-mlx-1bit
 ```
 
-You should see this:
+## Open WebUI
+
+You can run a chat via web-based UI using Open WebUI:
+
+```bash
+docker compose up
+
+# Then open http://localhost:3000
+```
+
+<img src="docs/openwebui_demo.png" alt="Bonsai demo in Open WebUI" width="600"/>
+
+**Note**: Make sure to set `max_tokens` to ~64k.
+
+## OpenCode
+
+If you like the model to generate code for you, [OpenCode](https://opencode.ai) is a great choice!
+
+```brew
+brew install opencode
+```
+
+```bash
+OPENCODE_CONFIG_CONTENT='{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "bonsai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "bonsai",
+      "options": {
+        "baseURL": "http://localhost:8430/v1",
+        "apiKey": "ignored"
+      },
+      "models": {
+        "prism-ml/Bonsai-8B-mlx-1bit": {
+          "name": "prism-ml/Bonsai-8B-mlx-1bit"
+        }
+      }
+    }
+  }
+}' opencode -m bonsai/prism-ml/Bonsai-8B-mlx-1bit
+```
+
+
 
 ## Commands
 

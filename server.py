@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from mlx_lm import load, generate
+from typing import Optional
 
 logger = logging.getLogger("bonsai")
 
@@ -37,14 +38,14 @@ class Message(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str = MODEL_NAME
     messages: list[Message]
-    max_tokens: int = Field(default=256, ge=1, le=4096)
+    max_tokens: Optional[int] = Field(default=None, ge=1, le=65536)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     stream: bool = False
 
 class CompletionRequest(BaseModel):
     model: str = MODEL_NAME
     prompt: str
-    max_tokens: int = Field(default=256, ge=1, le=4096)
+    max_tokens: Optional[int] = Field(default=None, ge=1, le=65536)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     stream: bool = False
 
@@ -109,8 +110,9 @@ async def chat_completions(req: ChatCompletionRequest):
 
     try:
         prompt = _build_chat_prompt(req.messages)
-        logger.info("Chat prompt length: %d chars", len(prompt))
-        text, prompt_tokens, completion_tokens, gen_s = _generate(prompt, req.max_tokens)
+        max_tokens = req.max_tokens if req.max_tokens is not None else 65536
+        logger.info("Chat prompt length: %d chars, max_tokens: %d", len(prompt), max_tokens)
+        text, prompt_tokens, completion_tokens, gen_s = _generate(prompt, max_tokens)
         tok_s = round(completion_tokens / gen_s, 1) if gen_s > 0 else 0
         logger.info("Chat: %d prompt tok, %d compl tok, %.2fs, %.1f tok/s",
                     prompt_tokens, completion_tokens, gen_s, tok_s)
@@ -149,8 +151,9 @@ async def completions(req: CompletionRequest):
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     try:
-        logger.info("Completion prompt length: %d chars", len(req.prompt))
-        text, prompt_tokens, completion_tokens, gen_s = _generate(req.prompt, req.max_tokens)
+        max_tokens = req.max_tokens if req.max_tokens is not None else 65536
+        logger.info("Completion prompt length: %d chars, max_tokens: %d", len(req.prompt), max_tokens)
+        text, prompt_tokens, completion_tokens, gen_s = _generate(req.prompt, max_tokens)
         tok_s = round(completion_tokens / gen_s, 1) if gen_s > 0 else 0
         logger.info("Completion: %d prompt tok, %d compl tok, %.2fs, %.1f tok/s",
                     prompt_tokens, completion_tokens, gen_s, tok_s)
