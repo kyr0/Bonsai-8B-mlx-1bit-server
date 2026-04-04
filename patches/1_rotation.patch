@@ -1,17 +1,18 @@
 From 6377f15deb8b5f4c01cca37fbc88e835ff7352b3 Mon Sep 17 00:00:00 2001
 From: deceptech-packet-ninja <roland.blandon@packetninjas.net>
 Date: Mon, 30 Mar 2026 14:01:59 -0400
-Subject: [PATCH 1/2] feat: add --kv-bits, --kv-group-size,
- --quantized-kv-start, --turbo-kv-bits, --turbo-fp16-layers to server
+Subject: [PATCH 1/2] feat: add --kv-bits, --turbo-kv-bits, /debug/memory,
+ /debug/clear_cache to server
 
 Enables KV cache quantization and TurboQuant in mlx_lm.server.
 Batching disabled when kv_bits or turbo_kv_bits is set.
-Adds /debug/memory endpoint for MLX memory diagnostics.
+Adds /debug/memory GET endpoint for MLX memory diagnostics.
+Adds /debug/clear_cache POST endpoint to free MLX buffer cache.
 
 Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 ---
- mlx_lm/server.py | 76 ++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 76 insertions(+), 1 deletion(-)
+ mlx_lm/server.py | 106 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 105 insertions(+), 1 deletion(-)
 
 diff --git a/mlx_lm/server.py b/mlx_lm/server.py
 index 7fc91fa2a..new_hash 100644
@@ -60,7 +61,18 @@ index 7fc91fa2a..new_hash 100644
              ):
                  rqueue.put(
                      Response(
-@@ -1760,6 +1776,8 @@
+@@ -1162,6 +1178,10 @@
+         """
+         Respond to a POST request from a client.
+         """
++        if self.path == "/debug/clear_cache":
++            self.handle_clear_cache()
++            return
++
+         request_factories = {
+             "/v1/completions": self.handle_text_completions,
+             "/v1/chat/completions": self.handle_chat_completions,
+@@ -1760,6 +1780,8 @@
              self.handle_models_request()
          elif self.path == "/health":
              self.handle_health_check()
@@ -69,10 +81,12 @@ index 7fc91fa2a..new_hash 100644
          else:
              self._set_completion_headers(404)
              self.end_headers()
-@@ -1775,6 +1793,33 @@
-         self.wfile.write('{"status": "ok"}'.encode())
-         self.wfile.flush()
+@@ -1773,6 +1795,58 @@
+         self.end_headers()
  
+         self.wfile.write('{"status": "ok"}'.encode())
++        self.wfile.flush()
++
 +    def handle_debug_memory(self):
 +        """Return MLX memory stats and prompt cache info."""
 +        import json as _json
@@ -100,10 +114,33 @@ index 7fc91fa2a..new_hash 100644
 +        self.wfile.write(_json.dumps(data).encode())
 +        self.wfile.flush()
 +
++    def handle_clear_cache(self):
++        """Clear the MLX buffer cache and return before/after stats."""
++        import json as _json
++
++        before_cache = mx.get_cache_memory()
++        before_active = mx.get_active_memory()
++        mx.clear_cache()
++        after_cache = mx.get_cache_memory()
++        after_active = mx.get_active_memory()
++        freed = before_cache - after_cache
++
++        data = {
++            "before_cache_bytes": before_cache,
++            "after_cache_bytes": after_cache,
++            "freed_bytes": freed,
++            "before_cache_mb": round(before_cache / 1048576, 1),
++            "after_cache_mb": round(after_cache / 1048576, 1),
++            "freed_mb": round(freed / 1048576, 1),
++            "active_mb": round(after_active / 1048576, 1),
++        }
++        self._set_completion_headers(200)
++        self.end_headers()
++        self.wfile.write(_json.dumps(data).encode())
+         self.wfile.flush()
+ 
      def handle_models_request(self):
-         """
-         Handle a GET request for the /v1/models endpoint.
-@@ -1996,8 +2041,38 @@
+@@ -1996,8 +2070,38 @@
          type=int,
          default=2048,
          help="Step size for prefill processing (default: 2048)",
@@ -113,14 +150,14 @@ index 7fc91fa2a..new_hash 100644
 +        type=int,
 +        default=None,
 +        help="Number of bits for KV cache quantization. None means no quantization.",
-+    )
-+    parser.add_argument(
+     )
+     parser.add_argument(
 +        "--kv-group-size",
 +        type=int,
 +        default=64,
 +        help="Group size for KV cache quantization (default: 64)",
-     )
-     parser.add_argument(
++    )
++    parser.add_argument(
 +        "--quantized-kv-start",
 +        type=int,
 +        default=0,

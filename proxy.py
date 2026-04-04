@@ -90,6 +90,7 @@ class Backend:
     spawn_time: float = 0.0
     last_request_time: float = 0.0
     baseline_kb: int = 0
+    last_cache_clear: float = 0.0
     _baseline_samples: list[int] = field(default_factory=list)
 
     @property
@@ -141,6 +142,8 @@ class BackendManager:
         self.watchdog_interval = watchdog_interval
         self.baseline_start = baseline_start
         self.baseline_end = baseline_end
+        self.pressure_cooldown = 30
+        self.cache_clear_cooldown = 60
 
         self.total_memory_kb = get_total_memory_kb()
         self.backends: list[Backend] = []
@@ -334,6 +337,25 @@ class BackendManager:
 
     # -- MLX memory polling ----------------------------------------
 
+    async def _clear_backend_cache(self, backend: Backend) -> bool:
+        """Ask the backend to clear its MLX buffer cache. Returns True on success."""
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.post(f"{backend.url}/debug/clear_cache", timeout=5)
+                if r.status_code == 200:
+                    data = r.json()
+                    log.info(
+                        "cache clear :%d  before=%s  after=%s  freed=%s",
+                        backend.port,
+                        f"{data.get('before_cache_mb', '?'):.0f} MB",
+                        f"{data.get('after_cache_mb', '?'):.0f} MB",
+                        f"{data.get('freed_mb', '?'):.0f} MB",
+                    )
+                    return True
+        except (httpx.ConnectError, httpx.TimeoutException, Exception):
+            pass
+        return False
+
     async def _poll_mlx_memory(self, backend: Backend) -> dict | None:
         """Poll the backend's /debug/memory endpoint for MLX memory stats."""
         try:
@@ -412,25 +434,50 @@ class BackendManager:
                     self.backends.remove(b)
                     break  # one at a time
 
-        # -- memory pressure restart --------------------------
+        # -- memory pressure: clear cache, then restart --------
         if total_active == 0:
             for b in alive:
                 if not b.baseline_kb:
+                    continue
+                idle_secs = now - b.last_request_time
+                if idle_secs < self.pressure_cooldown:
                     continue
                 fp = b.footprint_kb()
                 if fp is None:
                     continue
                 pressure = ((fp - b.baseline_kb) * 100) // b.baseline_kb
-                if pressure >= self.pressure_threshold:
-                    idle_secs = now - b.last_request_time
-                    log.info(
-                        "!! backend :%d pressure %d%% >= %d%%, idle %.0fs - restarting",
-                        b.port, pressure, self.pressure_threshold, idle_secs,
-                    )
-                    self._kill_backend(b)
-                    self.backends.remove(b)
-                    await self._spawn_backend()
-                    break  # one at a time
+                if pressure < self.pressure_threshold:
+                    continue
+
+                # Stage 1: try clearing the MLX buffer cache first
+                if (now - b.last_cache_clear) >= self.cache_clear_cooldown:
+                    cleared = await self._clear_backend_cache(b)
+                    b.last_cache_clear = now
+                    if cleared:
+                        # Re-check after clear
+                        fp2 = b.footprint_kb()
+                        if fp2 is not None:
+                            pressure2 = ((fp2 - b.baseline_kb) * 100) // b.baseline_kb
+                            if pressure2 < self.pressure_threshold:
+                                log.info(
+                                    "cache clear resolved pressure :%d  %d%% -> %d%%",
+                                    b.port, pressure, pressure2,
+                                )
+                                break
+                            log.info(
+                                "cache clear insufficient :%d  %d%% -> %d%%, restarting",
+                                b.port, pressure, pressure2,
+                            )
+
+                # Stage 2: kill and restart
+                log.info(
+                    "!! backend :%d pressure %d%% >= %d%%, idle %.0fs - restarting",
+                    b.port, pressure, self.pressure_threshold, idle_secs,
+                )
+                self._kill_backend(b)
+                self.backends.remove(b)
+                await self._spawn_backend()
+                break  # one at a time
 
 
 # -- HTTP client -------------------------------------------------------
