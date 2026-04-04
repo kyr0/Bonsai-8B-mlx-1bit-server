@@ -113,10 +113,10 @@ index ef8dbf7bf..f34d2b015 100644
  
 diff --git a/mlx_lm/models/turboquant_cache.py b/mlx_lm/models/turboquant_cache.py
 new file mode 100644
-index 000000000..2f196a862
+index 000000000..final00000
 --- /dev/null
 +++ b/mlx_lm/models/turboquant_cache.py
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,299 @@
 +"""TurboQuantKVCache: PolarQuant KV cache compression with fused Metal kernels.
 +
 +Implements TurboQuant (arXiv 2504.19874, ICLR 2026) for MLX KV cache compression.
@@ -192,6 +192,30 @@ index 000000000..2f196a862
 +        self._v_dim = None
 +        self._k_pdim = None
 +        self._v_pdim = None
++        self._dtype = None
++
++    def __deepcopy__(self, memo):
++        """Support deepcopy for prompt cache (mx.core.Dtype is not picklable)."""
++        new = TurboQuantKVCache.__new__(TurboQuantKVCache)
++        new.quant_bits = self.quant_bits
++        new.seed = self.seed
++        new.offset = self.offset
++        new.k_packed = self.k_packed
++        new.k_norms = self.k_norms
++        new.v_packed = self.v_packed
++        new.v_norms = self.v_norms
++        new._k_deq_buf = None
++        new._v_deq_buf = None
++        new._deq_offset = 0
++        new._deq_alloc = 0
++        new._k_q = None
++        new._v_q = None
++        new._k_dim = self._k_dim
++        new._v_dim = self._v_dim
++        new._k_pdim = self._k_pdim
++        new._v_pdim = self._v_pdim
++        new._dtype = self._dtype
++        return new
 +
 +    def _ensure_quantizer(self, k_dim, v_dim):
 +        if self._k_q is None:
@@ -208,18 +232,23 @@ index 000000000..2f196a862
 +        needed = prev + num_new
 +        if self.k_packed is None or needed > self.k_packed.shape[2]:
 +            n = ((needed + self.step - 1) // self.step) * self.step
-+            new_kp = mx.zeros((B, H, n, self._k_pdim), dtype=mx.uint32)
-+            new_kn = mx.zeros((B, H, n), dtype=mx.float32)
-+            new_vp = mx.zeros((B, H, n, self._v_pdim), dtype=mx.uint32)
-+            new_vn = mx.zeros((B, H, n), dtype=mx.float32)
 +            if self.k_packed is not None:
-+                self.k_packed = mx.concatenate([self.k_packed[..., :prev, :], new_kp], axis=2)
-+                self.k_norms = mx.concatenate([self.k_norms[..., :prev], new_kn], axis=2)
-+                self.v_packed = mx.concatenate([self.v_packed[..., :prev, :], new_vp], axis=2)
-+                self.v_norms = mx.concatenate([self.v_norms[..., :prev], new_vn], axis=2)
-+            else:
++                # Allocate new buffer and copy old data into it
++                new_kp = mx.zeros((B, H, n, self._k_pdim), dtype=mx.uint32)
++                new_kn = mx.zeros((B, H, n), dtype=mx.float32)
++                new_vp = mx.zeros((B, H, n, self._v_pdim), dtype=mx.uint32)
++                new_vn = mx.zeros((B, H, n), dtype=mx.float32)
++                new_kp[..., :prev, :] = self.k_packed[..., :prev, :]
++                new_kn[..., :prev] = self.k_norms[..., :prev]
++                new_vp[..., :prev, :] = self.v_packed[..., :prev, :]
++                new_vn[..., :prev] = self.v_norms[..., :prev]
 +                self.k_packed, self.k_norms = new_kp, new_kn
 +                self.v_packed, self.v_norms = new_vp, new_vn
++            else:
++                self.k_packed = mx.zeros((B, H, n, self._k_pdim), dtype=mx.uint32)
++                self.k_norms = mx.zeros((B, H, n), dtype=mx.float32)
++                self.v_packed = mx.zeros((B, H, n, self._v_pdim), dtype=mx.uint32)
++                self.v_norms = mx.zeros((B, H, n), dtype=mx.float32)
 +
 +    def _full_dequant(self, packed, norms, q, dim, B, H, total, dtype):
 +        flat_p = packed[..., :total, :].reshape(-1, packed.shape[-1])
@@ -230,6 +259,7 @@ index 000000000..2f196a862
 +    def update_and_fetch(self, keys, values):
 +        B, H, S, k_dim = keys.shape
 +        v_dim = values.shape[3]
++        self._dtype = keys.dtype
 +        self._ensure_quantizer(k_dim, v_dim)
 +        self._ensure_storage(B, H, S)
 +        prev = self.offset
@@ -249,12 +279,12 @@ index 000000000..2f196a862
 +
 +        # Incremental decode
 +        if S <= 4 and self._v_deq_buf is not None and self._deq_offset == prev:
-+            if total > self._deq_alloc:
++            if total > self._deq_alloc or self._k_deq_buf.shape[2] < total:
 +                na = ((total + self.step - 1) // self.step) * self.step
 +                self._k_deq_buf = mx.concatenate([self._k_deq_buf[..., :self._deq_offset, :],
-+                    mx.zeros((B, H, na - self._deq_alloc, k_dim), dtype=keys.dtype)], axis=2)
++                    mx.zeros((B, H, na - self._deq_offset, k_dim), dtype=keys.dtype)], axis=2)
 +                self._v_deq_buf = mx.concatenate([self._v_deq_buf[..., :self._deq_offset, :],
-+                    mx.zeros((B, H, na - self._deq_alloc, v_dim), dtype=values.dtype)], axis=2)
++                    mx.zeros((B, H, na - self._deq_offset, v_dim), dtype=values.dtype)], axis=2)
 +                self._deq_alloc = na
 +
 +            nk = dequant_fp16(k_pk.reshape(-1, self._k_pdim), k_nrm, self._k_q.centroids, self._k_q.signs, k_dim, self.quant_bits).reshape(B, H, S, k_dim)
@@ -300,9 +330,17 @@ index 000000000..2f196a862
 +        self.k_packed, self.k_norms, self.v_packed, self.v_norms = v
 +        self.offset = self.k_packed.shape[2]
 +
++    _DTYPE_MAP = {
++        "float16": mx.float16,
++        "bfloat16": mx.bfloat16,
++        "float32": mx.float32,
++    }
++    _DTYPE_NAME = {v: k for k, v in _DTYPE_MAP.items()}
++
 +    @property
 +    def meta_state(self):
-+        return f"{self.offset},{self.quant_bits},{self.seed},{self._k_dim or 0},{self._v_dim or 0}"
++        dtype_str = self._DTYPE_NAME.get(self._dtype, "float16")
++        return f"{self.offset},{self.quant_bits},{self.seed},{self._k_dim or 0},{self._v_dim or 0},{dtype_str}"
 +
 +    @meta_state.setter
 +    def meta_state(self, v):
@@ -310,6 +348,33 @@ index 000000000..2f196a862
 +        self.offset, self.quant_bits, self.seed = int(parts[0]), int(parts[1]), int(parts[2])
 +        self._k_dim = int(parts[3]) or None
 +        self._v_dim = int(parts[4]) or None
++        if len(parts) > 5:
++            self._dtype = self._DTYPE_MAP.get(parts[5], mx.float16)
++        else:
++            self._dtype = mx.float16
++
++    def dequantize(self):
++        """Return full dequantized (keys, values) as dense arrays."""
++        if self.k_packed is None:
++            return None, None
++        B, H = self.k_packed.shape[:2]
++        dtype = self._dtype if self._dtype is not None else mx.float16
++        self._ensure_quantizer(self._k_dim, self._v_dim)
++        k = self._full_dequant(self.k_packed, self.k_norms, self._k_q,
++                               self._k_dim, B, H, self.offset, dtype)
++        v = self._full_dequant(self.v_packed, self.v_norms, self._v_q,
++                               self._v_dim, B, H, self.offset, dtype)
++        return k, v
++
++    def copy(self):
++        """Return a shallow copy with independent offset and invalidated decode buffers."""
++        import copy as _copy
++        c = _copy.copy(self)
++        c._k_deq_buf = None
++        c._v_deq_buf = None
++        c._deq_offset = 0
++        c._deq_alloc = 0
++        return c
 +
 +    def is_trimmable(self):
 +        return True
@@ -317,6 +382,10 @@ index 000000000..2f196a862
 +    def trim(self, n):
 +        n = min(self.offset, n)
 +        self.offset -= n
++        # Keep decode buffers alive — data for 0:new_offset is still valid.
++        # Just clamp _deq_offset so the incremental path picks up correctly.
++        if self._k_deq_buf is not None and self._deq_offset > self.offset:
++            self._deq_offset = self.offset
 +        return n
 +
 +    def size(self):
@@ -325,6 +394,28 @@ index 000000000..2f196a862
 +    def make_mask(self, *args, **kwargs):
 +        from mlx_lm.models.cache import create_attention_mask
 +        return create_attention_mask(*args, offset=self.offset, **kwargs)
++
++    @classmethod
++    def from_state(cls, state, meta_state):
++        obj = cls.__new__(cls)
++        obj.k_packed = None
++        obj.k_norms = None
++        obj.v_packed = None
++        obj.v_norms = None
++        obj._k_deq_buf = None
++        obj._v_deq_buf = None
++        obj._deq_offset = 0
++        obj._deq_alloc = 0
++        obj._k_q = None
++        obj._v_q = None
++        obj._k_dim = None
++        obj._v_dim = None
++        obj._k_pdim = None
++        obj._v_pdim = None
++        obj._dtype = None
++        obj.meta_state = meta_state
++        obj.state = state
++        return obj
 diff --git a/mlx_lm/models/turboquant_kernels.py b/mlx_lm/models/turboquant_kernels.py
 new file mode 100644
 index 000000000..6c473b3f4
@@ -1192,35 +1283,6 @@ index d32c9c50a..d372456ba 100644
      cache = [
          globals()[c].from_state(state, meta_state)
          for c, state, meta_state in zip(classes, arrays, info)
-diff --git a/mlx_lm/models/turboquant_cache.py b/mlx_lm/models/turboquant_cache.py
-index 2f196a862..c5f76d38f 100644
---- a/mlx_lm/models/turboquant_cache.py
-+++ b/mlx_lm/models/turboquant_cache.py
-@@ -206,3 +206,24 @@ def size(self):
-     def make_mask(self, *args, **kwargs):
-         from mlx_lm.models.cache import create_attention_mask
-         return create_attention_mask(*args, offset=self.offset, **kwargs)
-+
-+    @classmethod
-+    def from_state(cls, state, meta_state):
-+        obj = cls.__new__(cls)
-+        obj.k_packed = None
-+        obj.k_norms = None
-+        obj.v_packed = None
-+        obj.v_norms = None
-+        obj._k_deq_buf = None
-+        obj._v_deq_buf = None
-+        obj._deq_offset = 0
-+        obj._deq_alloc = 0
-+        obj._k_q = None
-+        obj._v_q = None
-+        obj._k_dim = None
-+        obj._v_dim = None
-+        obj._k_pdim = None
-+        obj._v_pdim = None
-+        obj.meta_state = meta_state
-+        obj.state = state
-+        return obj
 diff --git a/tests/test_turboquant.py b/tests/test_turboquant.py
 new file mode 100644
 index 000000000..e3fa62ed9
@@ -1896,138 +1958,3 @@ index 000000000..e3fa62ed9
 +if __name__ == "__main__":
 +    unittest.main()
 
-From fceb638f9406762fc60227d0c1163ba9c737d23e Mon Sep 17 00:00:00 2001
-From: dirtyhandz <antonrozanov@gmail.com>
-Date: Wed, 1 Apr 2026 21:53:35 +0200
-Subject: [PATCH 5/5] Add public dequantize() and copy() methods to
- TurboQuantKVCache
-
----
- mlx_lm/models/turboquant_cache.py | 67 ++++++++++++++++++++++++++-----
- 1 file changed, 57 insertions(+), 10 deletions(-)
-
-diff --git a/mlx_lm/models/turboquant_cache.py b/mlx_lm/models/turboquant_cache.py
-index c5f76d38f..c080871b4 100644
---- a/mlx_lm/models/turboquant_cache.py
-+++ b/mlx_lm/models/turboquant_cache.py
-@@ -73,6 +73,7 @@ def __init__(self, bits: int = 3, seed: int = 42):
-         self._v_dim = None
-         self._k_pdim = None
-         self._v_pdim = None
-+        self._dtype = None
- 
-     def _ensure_quantizer(self, k_dim, v_dim):
-         if self._k_q is None:
-@@ -89,18 +90,23 @@ def _ensure_storage(self, B, H, num_new):
-         needed = prev + num_new
-         if self.k_packed is None or needed > self.k_packed.shape[2]:
-             n = ((needed + self.step - 1) // self.step) * self.step
--            new_kp = mx.zeros((B, H, n, self._k_pdim), dtype=mx.uint32)
--            new_kn = mx.zeros((B, H, n), dtype=mx.float32)
--            new_vp = mx.zeros((B, H, n, self._v_pdim), dtype=mx.uint32)
--            new_vn = mx.zeros((B, H, n), dtype=mx.float32)
-             if self.k_packed is not None:
--                self.k_packed = mx.concatenate([self.k_packed[..., :prev, :], new_kp], axis=2)
--                self.k_norms = mx.concatenate([self.k_norms[..., :prev], new_kn], axis=2)
--                self.v_packed = mx.concatenate([self.v_packed[..., :prev, :], new_vp], axis=2)
--                self.v_norms = mx.concatenate([self.v_norms[..., :prev], new_vn], axis=2)
--            else:
-+                # Allocate new buffer and copy old data into it
-+                new_kp = mx.zeros((B, H, n, self._k_pdim), dtype=mx.uint32)
-+                new_kn = mx.zeros((B, H, n), dtype=mx.float32)
-+                new_vp = mx.zeros((B, H, n, self._v_pdim), dtype=mx.uint32)
-+                new_vn = mx.zeros((B, H, n), dtype=mx.float32)
-+                new_kp[..., :prev, :] = self.k_packed[..., :prev, :]
-+                new_kn[..., :prev] = self.k_norms[..., :prev]
-+                new_vp[..., :prev, :] = self.v_packed[..., :prev, :]
-+                new_vn[..., :prev] = self.v_norms[..., :prev]
-                 self.k_packed, self.k_norms = new_kp, new_kn
-                 self.v_packed, self.v_norms = new_vp, new_vn
-+            else:
-+                self.k_packed = mx.zeros((B, H, n, self._k_pdim), dtype=mx.uint32)
-+                self.k_norms = mx.zeros((B, H, n), dtype=mx.float32)
-+                self.v_packed = mx.zeros((B, H, n, self._v_pdim), dtype=mx.uint32)
-+                self.v_norms = mx.zeros((B, H, n), dtype=mx.float32)
- 
-     def _full_dequant(self, packed, norms, q, dim, B, H, total, dtype):
-         flat_p = packed[..., :total, :].reshape(-1, packed.shape[-1])
-@@ -111,6 +117,7 @@ def _full_dequant(self, packed, norms, q, dim, B, H, total, dtype):
-     def update_and_fetch(self, keys, values):
-         B, H, S, k_dim = keys.shape
-         v_dim = values.shape[3]
-+        self._dtype = keys.dtype
-         self._ensure_quantizer(k_dim, v_dim)
-         self._ensure_storage(B, H, S)
-         prev = self.offset
-@@ -181,9 +188,17 @@ def state(self, v):
-         self.k_packed, self.k_norms, self.v_packed, self.v_norms = v
-         self.offset = self.k_packed.shape[2]
- 
-+    _DTYPE_MAP = {
-+        "float16": mx.float16,
-+        "bfloat16": mx.bfloat16,
-+        "float32": mx.float32,
-+    }
-+    _DTYPE_NAME = {v: k for k, v in _DTYPE_MAP.items()}
-+
-     @property
-     def meta_state(self):
--        return f"{self.offset},{self.quant_bits},{self.seed},{self._k_dim or 0},{self._v_dim or 0}"
-+        dtype_str = self._DTYPE_NAME.get(self._dtype, "float16")
-+        return f"{self.offset},{self.quant_bits},{self.seed},{self._k_dim or 0},{self._v_dim or 0},{dtype_str}"
- 
-     @meta_state.setter
-     def meta_state(self, v):
-@@ -191,6 +206,33 @@ def meta_state(self, v):
-         self.offset, self.quant_bits, self.seed = int(parts[0]), int(parts[1]), int(parts[2])
-         self._k_dim = int(parts[3]) or None
-         self._v_dim = int(parts[4]) or None
-+        if len(parts) > 5:
-+            self._dtype = self._DTYPE_MAP.get(parts[5], mx.float16)
-+        else:
-+            self._dtype = mx.float16
-+
-+    def dequantize(self):
-+        """Return full dequantized (keys, values) as dense arrays."""
-+        if self.k_packed is None:
-+            return None, None
-+        B, H = self.k_packed.shape[:2]
-+        dtype = self._dtype if self._dtype is not None else mx.float16
-+        self._ensure_quantizer(self._k_dim, self._v_dim)
-+        k = self._full_dequant(self.k_packed, self.k_norms, self._k_q,
-+                               self._k_dim, B, H, self.offset, dtype)
-+        v = self._full_dequant(self.v_packed, self.v_norms, self._v_q,
-+                               self._v_dim, B, H, self.offset, dtype)
-+        return k, v
-+
-+    def copy(self):
-+        """Return a shallow copy with independent offset and invalidated decode buffers."""
-+        import copy as _copy
-+        c = _copy.copy(self)
-+        c._k_deq_buf = None
-+        c._v_deq_buf = None
-+        c._deq_offset = 0
-+        c._deq_alloc = 0
-+        return c
- 
-     def is_trimmable(self):
-         return True
-@@ -198,6 +240,10 @@ def is_trimmable(self):
-     def trim(self, n):
-         n = min(self.offset, n)
-         self.offset -= n
-+        self._k_deq_buf = None
-+        self._v_deq_buf = None
-+        self._deq_offset = 0
-+        self._deq_alloc = 0
-         return n
- 
-     def size(self):
-@@ -224,6 +270,7 @@ def from_state(cls, state, meta_state):
-         obj._v_dim = None
-         obj._k_pdim = None
-         obj._v_pdim = None
-+        obj._dtype = None
-         obj.meta_state = meta_state
-         obj.state = state
-         return obj

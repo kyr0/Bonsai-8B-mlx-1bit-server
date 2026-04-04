@@ -97,18 +97,32 @@ stop:
 	@if [ -f "$(PID_FILE)" ]; then \
 		PID=$$(cat $(PID_FILE)); \
 		if kill -0 $$PID 2>/dev/null; then \
-			echo "=> Stopping proxy (PID $$PID) - backends will be cleaned up ..."; \
+			echo "=> Stopping proxy (PID $$PID) ..."; \
 			kill $$PID; \
-			sleep 2; \
-			rm -f $(PID_FILE); \
-			echo "=> Stopped."; \
+			for i in {1..20}; do \
+				kill -0 $$PID 2>/dev/null || break; \
+				sleep 0.25; \
+			done; \
+			if kill -0 $$PID 2>/dev/null; then \
+				echo "=> Proxy didn't exit, sending SIGKILL ..."; \
+				kill -9 $$PID 2>/dev/null; \
+			fi; \
 		else \
-			echo "=> Stale PID file - removing."; \
-			rm -f $(PID_FILE); \
+			echo "=> Proxy already dead (stale PID file)."; \
 		fi; \
+		rm -f $(PID_FILE); \
 	else \
-		echo "=> No PID file found; server not running."; \
+		echo "=> No PID file found."; \
 	fi
+	@# Kill any orphaned mlx_lm.server backends
+	@ORPHANS=$$(pgrep -f 'mlx_lm\.server.*--host 127\.0\.0\.1' 2>/dev/null || true); \
+	if [ -n "$$ORPHANS" ]; then \
+		echo "=> Killing orphaned backends: $$ORPHANS"; \
+		echo "$$ORPHANS" | xargs kill 2>/dev/null; \
+		sleep 1; \
+		echo "$$ORPHANS" | xargs kill -9 2>/dev/null || true; \
+	fi
+	@echo "=> Stopped."
 
 # -- status -----------------------------------------------------------
 status:
