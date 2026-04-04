@@ -1,8 +1,8 @@
-# Bonsai
+# Bonsai Garden High Performance MLX Inference Server
 
-OpenAI-compatible LLM inference server running [**Bonsai-8B**](https://huggingface.co/prism-ml/Bonsai-8B-mlx-1bit) (1-bit quantized, _based on Qwen3-8B_) on Apple Silicon via [MLX](https://github.com/ml-explore/mlx).
+This is an OpenAI-compatible LLM inference server running [**Bonsai-8B**](https://huggingface.co/prism-ml/Bonsai-8B-mlx-1bit) (1-bit quantized, _based on Qwen3-8B_) with speculative decoding [**Bonsai-1.7B**](https://huggingface.co/prism-ml/Bonsai-1.7B-mlx-1bit) and KV cache quantization (8 bit by default) on any Apple Silicon machine via [MLX](https://github.com/ml-explore/mlx).
 
-Uses a [PrismML MLX fork](https://github.com/PrismML-Eng/mlx) for 1-bit quantization support. I also fixed some bugs and implemented custom features - this is not yet merged upstream. Feel free to take anything you need.
+It uses a [PrismML MLX fork](https://github.com/PrismML-Eng/mlx) for 1-bit quantization support. I also fixed quite a bunch of bugs, patched in KV quantization support and implemented custom features. All of this is not yet merged upstream. Feel free to take anything you need.
 
 > A Macbook Air M4 can run the model with good performance (see below) and handle a wide range of tasks, including tool calling and long-context retrieval:
 
@@ -14,12 +14,22 @@ Uses a [PrismML MLX fork](https://github.com/PrismML-Eng/mlx) for 1-bit quantiza
 - Xcode Metal Toolchain (`setup` installs it automatically)
 - Python 3.12
 
-## Assumptions
+## Assumptions on Memory Usage and Performance
 
-- Average memory footprint: ~1.85 GB (model + KV cache)
-- Max. peak @ 65k tokens: up to 4 GB (model + KV cache + activations)
+- Average memory footprint: ~1.62 GB (models + initial KV cache, auto-grow)
+- Max. peak @ 65k tokens: up to 4 GB (models + KV cache + activations)
+- 
 
 => Fits comfortably within 16 GB RAM with room for OS and other processes; fits densely within 8 GB RAM with ample headroom. macOS  memory management is efficiently using memory compression, so actual memory pressure is about 2x lower than raw numbers suggest.
+
+## Special performance optimizations
+
+This server diverges from mlx-lm baseline by patching in / configuring:
+
+- 1 bit quantization for weights (by PrismML)
+- Speculative decoding is used with a small, fast model (`PrismML/Bonsai-1.7B-mlx-1bit`) draft model to guide generation and reduce latency
+- Current mlx-lm server has no support for KV cache quantization. The patch `patch/mlx_lm_kv_quant.patch` fills this gap. Default quanization is `8 bit @ group size 64`. You can tweak it down to `4 bit` to save another ~25% memory, but my test results started to become flaky, with the needle in the haystack retrieval test failing. 8 bit KV cache quantization has negligible impact on quality.  
+- A watchdog process ("bonsai-gardener") monitors GPU memory usage and restarts the server if it detects a memory leak in times where the server isn't used. This is merely a dirty hack, but mlx-lm has some memory leak issues that I couldn't identify or fix, and this is a pragmatic solution to keep the server running smoothly without manual intervention.
 
 ## Quick start
 
