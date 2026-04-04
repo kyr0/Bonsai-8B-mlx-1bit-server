@@ -335,6 +335,12 @@ class BackendManager:
             self._kill_backend(b)
         self.backends.clear()
 
+    def release_backend(self, backend: Backend) -> None:
+        """Decrement active connections; clear MLX cache when backend goes idle."""
+        backend.active_connections = max(0, backend.active_connections - 1)
+        if backend.active_connections == 0 and backend.alive:
+            asyncio.create_task(self._clear_backend_cache(backend))
+
     # -- MLX memory polling ----------------------------------------
 
     async def _clear_backend_cache(self, backend: Backend) -> bool:
@@ -541,12 +547,12 @@ async def proxy_request(request: Request) -> Response:
         headers.pop("content-length", None)
 
         if is_stream:
-            return await _proxy_streaming(client, request.method, url, headers, body, backend)
+            return await _proxy_streaming(client, request.method, url, headers, body, backend, mgr)
         else:
-            return await _proxy_regular(client, request.method, url, headers, body, backend)
+            return await _proxy_regular(client, request.method, url, headers, body, backend, mgr)
 
     except Exception as e:
-        backend.active_connections = max(0, backend.active_connections - 1)
+        mgr.release_backend(backend)
         log.exception("proxy error for backend :%d", backend.port)
         return JSONResponse({"error": str(e)}, status_code=502)
 
@@ -558,17 +564,18 @@ async def _proxy_regular(
     headers: dict,
     body: bytes,
     backend: Backend,
+    mgr: BackendManager,
 ) -> Response:
     try:
         resp = await client.request(method, url, headers=headers, content=body)
-        backend.active_connections = max(0, backend.active_connections - 1)
+        mgr.release_backend(backend)
         return Response(
             content=resp.content,
             status_code=resp.status_code,
             headers=dict(resp.headers),
         )
     except Exception:
-        backend.active_connections = max(0, backend.active_connections - 1)
+        mgr.release_backend(backend)
         raise
 
 
@@ -579,6 +586,7 @@ async def _proxy_streaming(
     headers: dict,
     body: bytes,
     backend: Backend,
+    mgr: BackendManager,
 ) -> StreamingResponse:
     req = client.build_request(method, url, headers=headers, content=body)
     resp = await client.send(req, stream=True)
@@ -589,7 +597,7 @@ async def _proxy_streaming(
                 yield chunk
         finally:
             await resp.aclose()
-            backend.active_connections = max(0, backend.active_connections - 1)
+            mgr.release_backend(backend)
 
     resp_headers = dict(resp.headers)
     resp_headers.pop("content-length", None)

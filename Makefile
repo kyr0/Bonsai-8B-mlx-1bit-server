@@ -10,11 +10,11 @@ LOG_FILE    := bonsai-proxy.log
 HOST        := 127.0.0.1
 PORT        := 8430
 MODEL       := prism-ml/Bonsai-8B-mlx-1bit
-DRAFT_MODEL := prism-ml/Bonsai-1.7B-mlx-1bit
+DRAFT_MODEL :=
 MAX_BACKENDS := 2
 MAX_MEM_UTIL := 80
 
-.PHONY: setup start stop status log test test-tools bench download patch unpatch clean
+.PHONY: setup start stop status log test test-tools bench download patch unpatch clean models
 
 setup: _install_uv _ensure_metal_toolchain _venv _deps patch download
 	@echo "\n[OK] Setup complete. Run 'make start' to launch the server."
@@ -62,10 +62,14 @@ patch: unpatch
 download:
 	@echo "=> Pre-downloading model $(MODEL) ..."
 	$(VENV)/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('$(MODEL)')"
-	@echo "=> Pre-downloading draft model $(DRAFT_MODEL) ..."
-	$(VENV)/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('$(DRAFT_MODEL)')"
+	@if [ -n "$(DRAFT_MODEL)" ]; then \
+		echo "=> Pre-downloading draft model $(DRAFT_MODEL) ..."; \
+		$(VENV)/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('$(DRAFT_MODEL)')"; \
+	fi
 	@echo "=> Models cached."
 
+# To enable TurboQuant KV cache, add after --max-tokens:
+#   --turbo-kv-bits 8 --turbo-fp16-layers 2
 start:
 	@if [ -f "$(PID_FILE)" ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
 		echo "Proxy already running (PID $$(cat $(PID_FILE)))"; \
@@ -74,12 +78,13 @@ start:
 		$(PYTHON) proxy.py \
 			--host $(HOST) --port $(PORT) \
 			--model $(MODEL) \
-			--draft-model $(DRAFT_MODEL) \
+			$(if $(DRAFT_MODEL),--draft-model $(DRAFT_MODEL)) \
 			--max-backends $(MAX_BACKENDS) \
 			--max-mem-util $(MAX_MEM_UTIL) \
 			--temp 0.5 --top-p 0.85 \
+			--kv-bits 8 \
+			--quantized-kv-start 128 \
 			--max-tokens 65536 \
-			--turbo-kv-bits 4 --turbo-fp16-layers 2 \
 			>> $(LOG_FILE) 2>&1 & \
 		echo $$! > $(PID_FILE); \
 		echo "=> Proxy PID: $$(cat $(PID_FILE))  (log: $(LOG_FILE))"; \
@@ -150,6 +155,23 @@ test:
 # -- bench ------------------------------------------------------------
 bench:
 	@bash bench.sh
+
+# -- models -----------------------------------------------------------
+models:
+	@$(PYTHON) -c "\
+	from huggingface_hub import scan_cache_dir; \
+	info = scan_cache_dir(); \
+	models = sorted([ \
+	    (r.repo_id, r.size_on_disk, str(r.repo_path)) \
+	    for r in info.repos if r.repo_type == 'model' \
+	]); \
+	wn = max((len(r) for r, _, _ in models), default=20); \
+	wp = max((len(p) for _, _, p in models), default=20); \
+	print(f'{\"Model\":<{wn}}  {\"Size\":>8}  Location'); \
+	print('-' * (wn + wp + 14)); \
+	[print(f'{rid:<{wn}}  {sz/1e9:>7.2f}G  {path}') for rid, sz, path in models]; \
+	print(f'\n{len(models)} model(s), {sum(sz for _,sz,_ in models)/1e9:.2f} GB total') \
+	"
 
 # -- unpatch ----------------------------------------------------------
 unpatch:

@@ -1,6 +1,6 @@
 # Bonsai Garden High Performance MLX Inference Server
 
-This is an OpenAI-compatible LLM inference server running [**Bonsai-8B**](https://huggingface.co/prism-ml/Bonsai-8B-mlx-1bit) (1-bit quantized, _based on Qwen3-8B_) with speculative decoding [**Bonsai-1.7B**](https://huggingface.co/prism-ml/Bonsai-1.7B-mlx-1bit) and KV cache quantization (8 bit by default) on any Apple Silicon machine via [MLX](https://github.com/ml-explore/mlx).
+This is an OpenAI-compatible LLM inference server running [**Bonsai-8B**](https://huggingface.co/prism-ml/Bonsai-8B-mlx-1bit) (1-bit quantized, _based on Qwen3-8B_) with 8-bit KV cache quantization on any Apple Silicon machine via [MLX](https://github.com/ml-explore/mlx).
 
 It uses a [PrismML MLX fork](https://github.com/PrismML-Eng/mlx) for 1-bit quantization support. I also fixed quite a bunch of bugs, patched in KV quantization support and implemented custom features. All of this is not yet merged upstream. Feel free to take anything you need.
 
@@ -27,13 +27,13 @@ It uses a [PrismML MLX fork](https://github.com/PrismML-Eng/mlx) for 1-bit quant
 This server diverges from mlx-lm baseline by patching in / configuring:
 
 - 1 bit quantization for weights (by PrismML)
-- Speculative decoding is used with a small, fast model (`PrismML/Bonsai-1.7B-mlx-1bit`) draft model to guide generation and reduce latency
-- Two patches are applied to mlx-lm in order: `patches/1_rotation.patch` (rotation support) and `patches/2_turbo_quant.patch` (KV cache quantization). Default KV quantization is `8 bit @ group size 64`. You can tweak it down to `4 bit` to save another ~25% memory, but my test results started to become flaky, with the needle in the haystack retrieval test failing. 8 bit KV cache quantization has negligible impact on quality.  
+- Two patches are applied to mlx-lm in order: `patches/1_rotation.patch` (rotation support + server extensions) and `patches/2_turbo_quant.patch` (TurboQuant KV cache compression). Default KV quantization is **8-bit standard** (`--kv-bits 8 --quantized-kv-start 128`), which keeps the first 128 tokens in full precision and quantizes the rest. For more aggressive compression, you can enable TurboQuant instead (see comment in Makefile): `--turbo-kv-bits 3 --turbo-fp16-layers 2` uses PolarQuant with randomized Hadamard rotation + Lloyd-Max codebook.
+- **Memory diagnostics**: the patched server exposes `GET /debug/memory` (MLX active/peak/cache/prompt-cache stats) and `POST /debug/clear_cache` (frees MLX buffer cache, returns before/after). The proxy watchdog polls these every tick and clears the buffer cache automatically when a backend goes idle.
 - A **reverse proxy** (`proxy.py`) sits in front of the mlx_lm backends and provides:
   - **Connection-aware routing**: tracks active requests per backend, routes to the least-busy one
   - **Auto-scale**: when all backends are busy and a new request arrives, a new backend is spawned on the next port. If memory allows. The `--max-mem-util` setting (default 80%) is a hard ceiling: after spawning, at least 20% of unified memory (including GPU) must remain free. This overrides `--max-backends` if the machine is memory-constrained.
   - **Auto-unload**: after `--idle-timeout` (default 300s) with zero active requests, all backends are killed and memory is freed. The proxy stays alive and accepts new connections; the next request triggers a cold-start (~2-3s), which is a great compromise for consumer workloads.
-  - **Memory watchdog**: a background task samples baseline memory footprint per backend (using macOS `footprint` which includes Metal/GPU unified memory), then restarts backends that exceed the pressure threshold when idle.
+  - **Memory watchdog**: a background task samples baseline memory footprint per backend (using macOS `footprint` which includes Metal/GPU unified memory). When pressure is detected and the backend is idle ≥30s, it first tries clearing the MLX buffer cache; if that's insufficient, it restarts the backend.
   - **SSE streaming relay**: raw chunk pass-through via `httpx` async streaming.
 
 ## Quick start
@@ -126,6 +126,7 @@ OPENCODE_CONFIG_CONTENT='{
 | `make log` | Tail server logs |
 | `make test` | Run example queries (health, chat, streaming) |
 | `make bench` | Run 50 varied prompts and report tok/s |
+| `make models` | List downloaded models with size and location |
 | `make clean` | Remove venv, logs, and caches |
 
 ## API
@@ -175,8 +176,19 @@ Edit variables at the top of the `Makefile`:
 |----------|---------|-------------|
 | `PORT` | `8430` | Proxy listen port |
 | `MODEL` | `prism-ml/Bonsai-8B-mlx-1bit` | HuggingFace model ID |
+| `DRAFT_MODEL` | _(empty)_ | Draft model for speculative decoding (see below) |
 | `MAX_BACKENDS` | `2` | Maximum backend instances |
 | `MAX_MEM_UTIL` | `80` | Max memory utilisation % (must keep rest free) |
+
+### Speculative Decoding
+
+You can optionally enable speculative decoding with a draft model:
+
+```sh
+make start DRAFT_MODEL=prism-ml/Bonsai-1.7B-mlx-1bit
+```
+
+> **Note**: On most Apple Silicon machines, speculative decoding with MLX actually _decreases_ generation speed rather than improving it. The overhead of running the draft model, verifying tokens, and rolling back on misses outweighs the savings from accepted tokens — especially on memory-bandwidth-bound hardware where both models compete for the same unified memory bus. The feature is disabled by default for this reason. It may help on machines with very high memory bandwidth (e.g. M2 Ultra / M4 Max with high-bandwidth unified memory), but benchmark with `make bench` before committing to it.
 
 ## Integrations
 
