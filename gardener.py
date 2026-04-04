@@ -103,7 +103,7 @@ def main() -> None:
         args.interval, args.idle_timeout, args.threshold,
     )
     log.info(
-        "baseline window: %ds – %ds after start", args.baseline_start, args.baseline_end
+        "baseline window: %ds - %ds after start", args.baseline_start, args.baseline_end
     )
 
     start_time = time.monotonic()
@@ -114,7 +114,7 @@ def main() -> None:
     while True:
         time.sleep(args.interval)
 
-        # ── get server PID ───────────────────────────────────────
+        # -- get server PID ---------------------------------------
         server_pid = get_server_pid(args.pid_file)
         if server_pid is None:
             baseline_set = False
@@ -129,7 +129,7 @@ def main() -> None:
 
         elapsed = time.monotonic() - start_time
 
-        # ── baseline sampling window ─────────────────────────────
+        # -- baseline sampling window -----------------------------
         if not baseline_set:
             if args.baseline_start <= elapsed < args.baseline_end:
                 baseline_rss += current_rss
@@ -143,23 +143,23 @@ def main() -> None:
                         fmt_mb(baseline_rss), baseline_samples,
                     )
                 else:
-                    log.info("no baseline samples collected — retrying window")
+                    log.info("no baseline samples collected - retrying window")
                     start_time = time.monotonic()
                     baseline_rss = 0
             continue
 
-        # ── monitoring ───────────────────────────────────────────
+        # -- monitoring -------------------------------------------
         idle_secs = seconds_since_modified(args.log_file)
         pressure = ((current_rss - baseline_rss) * 100) // baseline_rss
 
-        # ── gardening decision ───────────────────────────────────
+        # -- gardening decision -----------------------------------
         if idle_secs >= args.idle_timeout and pressure >= args.threshold:
             log.info(
                 "!! memory pressure %d%% >= %d%% and idle %.0fs >= %ds",
                 pressure, args.threshold, idle_secs, args.idle_timeout,
             )
             log.info(
-                "!! rss=%s  baseline=%s  — restarting server ...",
+                "!! rss=%s  baseline=%s  - restarting server ...",
                 fmt_mb(current_rss), fmt_mb(baseline_rss),
             )
             restart_count += 1
@@ -172,7 +172,7 @@ def main() -> None:
             baseline_samples = 0
             start_time = time.monotonic()
 
-            log.info("server restarted — re-establishing baseline")
+            log.info("server restarted - re-establishing baseline")
 
 
 if __name__ == "__main__":

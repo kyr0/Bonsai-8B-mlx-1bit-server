@@ -28,8 +28,13 @@ This server diverges from mlx-lm baseline by patching in / configuring:
 
 - 1 bit quantization for weights (by PrismML)
 - Speculative decoding is used with a small, fast model (`PrismML/Bonsai-1.7B-mlx-1bit`) draft model to guide generation and reduce latency
-- Current mlx-lm server has no support for KV cache quantization. The patch `patch/mlx_lm_kv_quant.patch` fills this gap. Default quanization is `8 bit @ group size 64`. You can tweak it down to `4 bit` to save another ~25% memory, but my test results started to become flaky, with the needle in the haystack retrieval test failing. 8 bit KV cache quantization has negligible impact on quality.  
-- A watchdog process ("bonsai-gardener") monitors GPU memory usage and restarts the server if it detects a memory leak in times where the server isn't used. This is merely a dirty hack, but mlx-lm has some memory leak issues that I couldn't identify or fix, and this is a pragmatic solution to keep the server running smoothly without manual intervention.
+- Current mlx-lm server has no support for KV cache quantization. The patch `patch/mlx_lm_kv_quant.patch` fills this gap. Default quanization is `8 bit @ group size 64`. You can tweak it down to `4 bit` to save another ~25% memory, but my test results started to become flaky, with the needle in the haystack retrieval test failing. 8 bit KV cache quantization has negligible impact on quality.  
+- A **reverse proxy** (`proxy.py`) sits in front of the mlx_lm backends and provides:
+  - **Connection-aware routing**: tracks active requests per backend, routes to the least-busy one
+  - **Auto-scale**: when all backends are busy and a new request arrives, a new backend is spawned on the next port. If memory allows. The `--max-mem-util` setting (default 80%) is a hard ceiling: after spawning, at least 20% of unified memory (including GPU) must remain free. This overrides `--max-backends` if the machine is memory-constrained.
+  - **Auto-unload**: after `--idle-timeout` (default 300s) with zero active requests, all backends are killed and memory is freed. The proxy stays alive and accepts new connections; the next request triggers a cold-start (~2-3s), which is a great compromise for consumer workloads.
+  - **Memory watchdog**: a background task samples baseline memory footprint per backend (using macOS `footprint` which includes Metal/GPU unified memory), then restarts backends that exceed the pressure threshold when idle.
+  - **SSE streaming relay**: raw chunk pass-through via `httpx` async streaming.
 
 ## Quick start
 
@@ -136,6 +141,7 @@ curl http://localhost:8430/v1/chat/completions \
 Endpoints:
 - `GET  /v1/models` - list available models
 - `POST /v1/chat/completions` - chat completion (supports `"stream": true`)
+- `GET  /health` - proxy health (backends alive, active connections)
 
 
 ## Per Request Hyperparameters
@@ -167,8 +173,10 @@ Edit variables at the top of the `Makefile`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `8430` | Server port |
+| `PORT` | `8430` | Proxy listen port |
 | `MODEL` | `prism-ml/Bonsai-8B-mlx-1bit` | HuggingFace model ID |
+| `MAX_BACKENDS` | `2` | Maximum backend instances |
+| `MAX_MEM_UTIL` | `80` | Max memory utilisation % (must keep rest free) |
 
 ## Integrations
 

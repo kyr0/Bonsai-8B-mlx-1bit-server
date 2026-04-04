@@ -6,14 +6,15 @@ VENV        := .venv
 UV          := uv
 PYTHON      := $(VENV)/bin/python
 PID_FILE    := .bonsai.pid
-GARDENER_PID := .gardener.pid
-LOG_FILE    := bonsai.log
+LOG_FILE    := bonsai-proxy.log
 HOST        := 127.0.0.1
 PORT        := 8430
 MODEL       := prism-ml/Bonsai-8B-mlx-1bit
 DRAFT_MODEL := prism-ml/Bonsai-1.7B-mlx-1bit
+MAX_BACKENDS := 2
+MAX_MEM_UTIL := 80
 
-.PHONY: setup start stop status log test test-tools bench generate download clean gardener gardener-stop gardener-status
+.PHONY: setup start stop status log test test-tools bench download clean
 
 setup: _install_uv _ensure_metal_toolchain _venv _deps download
 	@echo "\n[OK] Setup complete. Run 'make start' to launch the server."
@@ -57,55 +58,40 @@ download:
 	$(VENV)/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('$(DRAFT_MODEL)')"
 	@echo "=> Models cached."
 
-start: _server-start
-	@if [ ! -f "$(GARDENER_PID)" ] || ! kill -0 $$(cat $(GARDENER_PID)) 2>/dev/null; then \
-		echo "=> Starting bonsai-gardener ..."; \
-		$(PYTHON) gardener.py >> bonsai-gardener.log 2>/dev/null & \
-		sleep 1; \
-		echo "=> Gardener PID: $$(cat $(GARDENER_PID))  (log: bonsai-gardener.log)"; \
-	fi
-
-_server-start:
+start:
 	@if [ -f "$(PID_FILE)" ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
-		echo "Server already running (PID $$(cat $(PID_FILE)))"; \
+		echo "Proxy already running (PID $$(cat $(PID_FILE)))"; \
 	else \
-		echo "=> Starting bonsai mlx_lm.server on $(HOST):$(PORT) ..."; \
-		$(VENV)/bin/python -m mlx_lm.server \
+		echo "=> Starting bonsai-proxy on $(HOST):$(PORT) ..."; \
+		$(PYTHON) proxy.py \
+			--host $(HOST) --port $(PORT) \
 			--model $(MODEL) \
 			--draft-model $(DRAFT_MODEL) \
-			--host $(HOST) --port $(PORT) \
+			--max-backends $(MAX_BACKENDS) \
+			--max-mem-util $(MAX_MEM_UTIL) \
 			--temp 0.5 --top-p 0.85 \
 			--max-tokens 65536 \
 			--kv-bits 8 --kv-group-size 64 \
 			>> $(LOG_FILE) 2>&1 & \
 		echo $$! > $(PID_FILE); \
-		echo "=> Server PID: $$(cat $(PID_FILE))  (log: $(LOG_FILE))"; \
-		echo "=> Waiting for server to be ready ..."; \
+		echo "=> Proxy PID: $$(cat $(PID_FILE))  (log: $(LOG_FILE))"; \
+		echo "=> Waiting for proxy + backend to be ready ..."; \
 		for i in {1..60}; do \
 			if curl -sf http://$(HOST):$(PORT)/v1/models >/dev/null 2>&1; then \
-				echo "=> Server is ready."; \
+				echo "=> Ready."; \
 				break; \
 			fi; \
 			sleep 2; \
 		done; \
 	fi
 
-stop: _server-stop
-	@if [ -f "$(GARDENER_PID)" ]; then \
-		GPID=$$(cat $(GARDENER_PID)); \
-		if kill -0 $$GPID 2>/dev/null; then \
-			echo "=> Stopping gardener (PID $$GPID) ..."; \
-			kill $$GPID; \
-			rm -f $(GARDENER_PID); \
-		fi; \
-	fi
-
-_server-stop:
+stop:
 	@if [ -f "$(PID_FILE)" ]; then \
 		PID=$$(cat $(PID_FILE)); \
 		if kill -0 $$PID 2>/dev/null; then \
-			echo "=> Stopping server (PID $$PID) ..."; \
+			echo "=> Stopping proxy (PID $$PID) - backends will be cleaned up ..."; \
 			kill $$PID; \
+			sleep 2; \
 			rm -f $(PID_FILE); \
 			echo "=> Stopped."; \
 		else \
@@ -119,13 +105,11 @@ _server-stop:
 # -- status -----------------------------------------------------------
 status:
 	@if [ -f "$(PID_FILE)" ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
-		echo "Process: running (PID $$(cat $(PID_FILE)))"; \
+		echo "Proxy: running (PID $$(cat $(PID_FILE)))"; \
+		curl -sf http://$(HOST):$(PORT)/health 2>/dev/null | python3 -m json.tool || true; \
 	else \
-		echo "Process: not running"; \
+		echo "Proxy: not running"; \
 	fi
-	@curl -sf http://$(HOST):$(PORT)/v1/models 2>/dev/null \
-		&& echo "" \
-		|| echo "Server: unreachable"
 
 log:
 	@if [ -f "$(LOG_FILE)" ]; then \
@@ -145,44 +129,10 @@ test:
 bench:
 	@bash bench.sh
 
-# -- gardener (memory watchdog) ----------------------------------------
-gardener:
-	@if [ -f "$(GARDENER_PID)" ] && kill -0 $$(cat $(GARDENER_PID)) 2>/dev/null; then \
-		echo "Gardener already running (PID $$(cat $(GARDENER_PID)))"; \
-	else \
-		echo "=> Starting bonsai-gardener ..."; \
-		$(PYTHON) gardener.py >> bonsai-gardener.log 2>/dev/null & \
-		echo "=> Gardener PID: $$(cat $(GARDENER_PID))  (log: bonsai-gardener.log)"; \
-	fi
-
-gardener-stop:
-	@if [ -f "$(GARDENER_PID)" ]; then \
-		PID=$$(cat $(GARDENER_PID)); \
-		if kill -0 $$PID 2>/dev/null; then \
-			echo "=> Stopping gardener (PID $$PID) ..."; \
-			kill $$PID; \
-			rm -f $(GARDENER_PID); \
-			echo "=> Gardener stopped."; \
-		else \
-			echo "=> Stale gardener PID file - removing."; \
-			rm -f $(GARDENER_PID); \
-		fi; \
-	else \
-		echo "=> No gardener PID file found; gardener not running."; \
-	fi
-
-gardener-status:
-	@if [ -f "$(GARDENER_PID)" ] && kill -0 $$(cat $(GARDENER_PID)) 2>/dev/null; then \
-		echo "Gardener: running (PID $$(cat $(GARDENER_PID)))"; \
-		tail -3 bonsai-gardener.log 2>/dev/null || true; \
-	else \
-		echo "Gardener: not running"; \
-	fi
-
 # -- clean ------------------------------------------------------------
 clean:
 	@echo "=> Removing virtual environment and cached state ..."
-	rm -rf $(VENV) $(PID_FILE) $(GARDENER_PID) $(LOG_FILE) bonsai-gardener.log
+	rm -rf $(VENV) $(PID_FILE) $(LOG_FILE) bonsai-backend-*.log
 	@echo "=> Clearing uv git cache (PrismML fork) ..."
 	rm -rf $$(python3 -c "import pathlib; p=pathlib.Path.home()/'.cache'/'uv'/'git-v0'; print(p)" 2>/dev/null)
 	@echo "=> Clean complete. Run 'make setup' to reinstall."
