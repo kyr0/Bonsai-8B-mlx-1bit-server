@@ -28,7 +28,7 @@ This server diverges from mlx-lm baseline by patching in / configuring:
 
 - 1 bit quantization for weights (by PrismML)
 - Speculative decoding is used with a small, fast model (`PrismML/Bonsai-1.7B-mlx-1bit`) draft model to guide generation and reduce latency
-- Current mlx-lm server has no support for KV cache quantization. The patch `patch/mlx_lm_kv_quant.patch` fills this gap. Default quanization is `8 bit @ group size 64`. You can tweak it down to `4 bit` to save another ~25% memory, but my test results started to become flaky, with the needle in the haystack retrieval test failing. 8 bit KV cache quantization has negligible impact on quality.  
+- Two patches are applied to mlx-lm in order: `patches/1_rotation.patch` (rotation support) and `patches/2_turbo_quant.patch` (KV cache quantization). Default KV quantization is `8 bit @ group size 64`. You can tweak it down to `4 bit` to save another ~25% memory, but my test results started to become flaky, with the needle in the haystack retrieval test failing. 8 bit KV cache quantization has negligible impact on quality.  
 - A **reverse proxy** (`proxy.py`) sits in front of the mlx_lm backends and provides:
   - **Connection-aware routing**: tracks active requests per backend, routes to the least-busy one
   - **Auto-scale**: when all backends are busy and a new request arrives, a new backend is spawned on the next port. If memory allows. The `--max-mem-util` setting (default 80%) is a hard ceiling: after spawning, at least 20% of unified memory (including GPU) must remain free. This overrides `--max-backends` if the machine is memory-constrained.
