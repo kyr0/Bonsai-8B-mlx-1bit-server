@@ -14,7 +14,7 @@ MODEL = client.models.list().data[0].id
 
 PROMPTS = [
     "What is 2+2? Answer with just the number.",
-    "Solve: 17 × 23. Show your work step by step.",
+    "Solve: 17 x 23. Show your work step by step.",
     "If a train travels 120 km in 2 hours, what is its average speed in m/s?",
     "What is the derivative of x³ + 2x² - 5x + 3?",
     "A box has 3 red, 5 blue, and 2 green balls. What's the probability of picking blue?",
@@ -51,7 +51,7 @@ for i, prompt in enumerate(PROMPTS):
         "tok_per_sec": tok_s,
     }
     results.append(entry)
-    print(f"    → {completion_tokens} tokens in {elapsed}s ({tok_s} tok/s)")
+    print(f"    => {completion_tokens} tokens in {elapsed}s ({tok_s} tok/s)")
 
 with open("calibration.json", "w") as f:
     json.dump(results, f, indent=2, ensure_ascii=False)

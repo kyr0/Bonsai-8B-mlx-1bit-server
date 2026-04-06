@@ -150,6 +150,8 @@ test:
 	$(VENV)/bin/python test.py
 	@echo "\n=> Running tool calling tests ..."
 	$(VENV)/bin/python test_tools.py
+	@echo "\n=> Running test calibration ..."
+	$(VENV)/bin/python test_calibration.py
 
 # -- bench ------------------------------------------------------------
 bench:

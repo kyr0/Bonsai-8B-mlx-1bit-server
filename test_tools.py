@@ -14,7 +14,7 @@ client = OpenAI()
 MODEL = client.models.list().data[0].id
 
 
-# ── Pydantic models for tool call argument validation ────────────────
+# -- Pydantic models for tool call argument validation ----------------
 
 class GetWeatherArgs(BaseModel):
     location: str
@@ -126,7 +126,7 @@ def run_test(name, user_message, expected_tools=None):
             if schema:
                 try:
                     schema.model_validate(parsed)
-                    print(f"         ✓ args valid ({schema.__name__})")
+                    print(f"         [OK] args valid ({schema.__name__})")
                 except ValidationError as e:
                     errors.append(f"{fn_name}: schema validation failed: {e}")
             else:
@@ -157,7 +157,7 @@ def run_test(name, user_message, expected_tools=None):
 
     if errors:
         for e in errors:
-            print(f"    ✗ {e}")
+            print(f"    [X] {e}")
         return False
     return True
 

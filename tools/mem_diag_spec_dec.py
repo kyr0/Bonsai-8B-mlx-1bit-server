@@ -66,7 +66,7 @@ mx.eval([c.state for c in draft_cache])
 
 report("after prefill")
 
-# Simulate speculative decoding loop: draft 3 → verify → trim → repeat
+# Simulate speculative decoding loop: draft 3 => verify => trim => repeat
 NUM_DRAFT = 3
 NUM_STEPS = 200
 print(f"\nSpec decode: {NUM_DRAFT} draft tokens, {NUM_STEPS} steps")

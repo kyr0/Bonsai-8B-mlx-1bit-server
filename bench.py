@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""bench.py – benchmark generation throughput against the server."""
+"""bench.py - benchmark generation throughput against the server."""
 
 import json
 import time

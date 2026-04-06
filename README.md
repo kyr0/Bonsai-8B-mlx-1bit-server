@@ -16,8 +16,9 @@ It uses a [PrismML MLX fork](https://github.com/PrismML-Eng/mlx) for 1-bit quant
 
 ## Assumptions on Memory Usage and Performance
 
-- Average memory footprint: ~1.58 GB (models + initial KV cache, auto-grow)
-- Max. peak @ 65k tokens: up to 4 GB (models + KV cache + activations)
+- Average memory footprint: 1.36 GB (idle) to ~1.58 GB (models + initial KV cache, auto-grow)
+- Max. peak @ 65k tokens: up to 3.79 GB (models + KV cache + activations)
+- I've implemented aggressive memory management mechanisms with MLX memory pooling and per-backend cache clearing in `_clear_backend_cache()`. This server shouldn't leak memory over time and sustain typical single-user load, returning to 1.36 GB idle footprint and 0 GB footprint after long idle periods (full model weight unloading when unused). First new request has 2-3 seconds extra delay in this case.
 
 => Fits comfortably within 16 GB RAM with room for OS and other processes; fits densely within 8 GB RAM with ample headroom. macOS  memory management is efficiently using memory compression, so actual memory pressure is about 2x lower than raw numbers suggest.
 
@@ -32,7 +33,7 @@ This server diverges from mlx-lm baseline by patching in / configuring:
   - **Connection-aware routing**: tracks active requests per backend, routes to the least-busy one
   - **Auto-scale**: when all backends are busy and a new request arrives, a new backend is spawned on the next port. If memory allows. The `--max-mem-util` setting (default 80%) is a hard ceiling: after spawning, at least 20% of unified memory (including GPU) must remain free. This overrides `--max-backends` if the machine is memory-constrained.
   - **Auto-unload**: after `--idle-timeout` (default 300s) with zero active requests, all backends are killed and memory is freed. The proxy stays alive and accepts new connections; the next request triggers a cold-start (~2-3s), which is a great compromise for consumer workloads.
-  - **Memory watchdog**: a background task samples baseline memory footprint per backend (using macOS `footprint` which includes Metal/GPU unified memory). When pressure is detected and the backend is idle ≥30s, it first tries clearing the MLX buffer cache; if that's insufficient, it restarts the backend.
+  - **Memory watchdog**: a background task samples baseline memory footprint per backend (using macOS `footprint` which includes Metal/GPU unified memory). When pressure is detected and the backend is idle >=30s, it first tries clearing the MLX buffer cache; if that's insufficient, it restarts the backend.
   - **SSE streaming relay**: raw chunk pass-through via `httpx` async streaming.
 
 ## Quick start
@@ -187,7 +188,7 @@ You can optionally enable speculative decoding with a draft model:
 make start DRAFT_MODEL=prism-ml/Bonsai-1.7B-mlx-1bit
 ```
 
-> **Note**: On most Apple Silicon machines, speculative decoding with MLX actually _decreases_ generation speed rather than improving it. The overhead of running the draft model, verifying tokens, and rolling back on misses outweighs the savings from accepted tokens — especially on memory-bandwidth-bound hardware where both models compete for the same unified memory bus. The feature is disabled by default for this reason. It may help on machines with very high memory bandwidth (e.g. M2 Ultra / M4 Max with high-bandwidth unified memory), but benchmark with `make bench` before committing to it.
+> **Note**: On most Apple Silicon machines, speculative decoding with MLX actually _decreases_ generation speed rather than improving it. The overhead of running the draft model, verifying tokens, and rolling back on misses outweighs the savings from accepted tokens - especially on memory-bandwidth-bound hardware where both models compete for the same unified memory bus. The feature is disabled by default for this reason. It may help on machines with very high memory bandwidth (e.g. M2 Ultra / M4 Max with high-bandwidth unified memory), but benchmark with `make bench` before committing to it.
 
 ## Integrations
 

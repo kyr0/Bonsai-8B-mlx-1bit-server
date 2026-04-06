@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""test.py – integration tests for the bonsai server using the OpenAI Python SDK."""
+"""test.py - integration tests for the bonsai server using the OpenAI Python SDK."""
 
 import json
 import os
@@ -33,13 +33,13 @@ def fail(msg: str):
     FAIL += 1
 
 
-# ── helpers ──────────────────────────────────────────────────────────
+# -- helpers ----------------------------------------------------------
 
 def chat(messages, **kwargs):
     return client.chat.completions.create(model=MODEL, messages=messages, **kwargs)
 
 
-# ── tests ────────────────────────────────────────────────────────────
+# -- tests ------------------------------------------------------------
 
 def test_list_models():
     print("\n-- List models (health check) --")
@@ -156,7 +156,7 @@ def test_calibration_baseline():
     """Re-run calibration prompts at temp=0.01 and compare against saved baseline."""
     print("\n-- Calibration baseline match (temp=0.01) --")
     if not os.path.exists(CALIBRATION_FILE):
-        fail(f"{CALIBRATION_FILE} not found — run test_calibration.py first")
+        fail(f"{CALIBRATION_FILE} not found - run test_calibration.py first")
         return
 
     with open(CALIBRATION_FILE) as f:
@@ -259,7 +259,7 @@ def test_finish_reason_length():
         fail(str(e))
 
 
-# ── main ─────────────────────────────────────────────────────────────
+# -- main -------------------------------------------------------------
 
 if __name__ == "__main__":
     test_list_models()
